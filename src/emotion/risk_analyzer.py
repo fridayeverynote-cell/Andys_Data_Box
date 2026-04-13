@@ -190,8 +190,29 @@ class RiskResult:
     method: str = "rule_based"
     reasoning: str = ""                   # LLM 사용 시 추론 근거
 
+    @property
+    def risk_score_percent(self) -> int:
+        """100분율로 환산된 위험도 점수"""
+        return int(self.risk_score * 100)
+
+    @property
+    def risk_score_str(self) -> str:
+        """100% 표기법 문자열"""
+        return f"{self.risk_score_percent}%"
+
     def to_dict(self) -> dict:
         result = asdict(self)
+        result["risk_score_percent"] = self.risk_score_percent
+        result["risk_score_str"] = self.risk_score_str
+
+        # 내부 시그널(세부 분석 지표)들도 퍼센트 표기 추가
+        if "signals" in result and isinstance(result["signals"], dict):
+            result["signals_percent"] = {}
+            for k, v in list(result["signals"].items()):
+                if isinstance(v, float):
+                    result["signals_percent"][f"{k}_percent"] = int(v * 100)
+                    result["signals_percent"][f"{k}_str"] = f"{int(v * 100)}%"
+
         return result
 
     def to_json(self, ensure_ascii: bool = False, indent: int = 2) -> str:

@@ -113,9 +113,20 @@ class EmotionResult:
     reasoning: str = ""  # 분류 근거 (LLM 사용 시)
     strategy: str = ""  # 대응 전략
 
+    @property
+    def confidence_percent(self) -> int:
+        return int(self.confidence * 100)
+
+    @property
+    def confidence_str(self) -> str:
+        return f"{self.confidence_percent}%"
+
     def to_dict(self) -> dict:
         """딕셔너리 변환."""
-        return asdict(self)
+        result = asdict(self)
+        result["confidence_percent"] = self.confidence_percent
+        result["confidence_str"] = self.confidence_str
+        return result
 
     def to_json(self, ensure_ascii: bool = False, indent: int = 2) -> str:
         """JSON 문자열 변환."""
@@ -135,9 +146,30 @@ class DialogueEmotionResult:
     emotion_volatility: float = 0.0
     method: str = "rule_based"
 
+    @property
+    def negative_ratio_percent(self) -> int:
+        return int(self.negative_ratio * 100)
+
+    @property
+    def negative_ratio_str(self) -> str:
+        return f"{self.negative_ratio_percent}%"
+
+    @property
+    def emotion_volatility_percent(self) -> int:
+        return int(self.emotion_volatility * 100)
+
+    @property
+    def emotion_volatility_str(self) -> str:
+        return f"{self.emotion_volatility_percent}%"
+
     def to_dict(self) -> dict:
         """딕셔너리 변환."""
         result = asdict(self)
+        result["utterance_results"] = [u.to_dict() for u in self.utterance_results]
+        result["negative_ratio_percent"] = self.negative_ratio_percent
+        result["negative_ratio_str"] = self.negative_ratio_str
+        result["emotion_volatility_percent"] = self.emotion_volatility_percent
+        result["emotion_volatility_str"] = self.emotion_volatility_str
         return result
 
     def to_json(self, ensure_ascii: bool = False, indent: int = 2) -> str:
