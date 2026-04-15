@@ -294,6 +294,9 @@ pyrightconfig.json
 !.vscode/extensions.json
 !.vscode/*.code-snippets
 
+# Streamlit local secrets
+.streamlit/secrets.toml
+
 # Local History for Visual Studio Code
 .history/
 

@@ -35,17 +35,48 @@ from dataclasses import dataclass, field
 
 # ── 프로젝트 루트 설정 ──────────────────────────────────────
 ROOT = Path(__file__).resolve().parent
+# 프로젝트 루트 = src/utils 상위 2단계
+PROJECT_ROOT = ROOT.parent.parent
 sys.path.insert(0, str(ROOT))
 
-# ── .env 로딩 ───────────────────────────────────────────────
-from dotenv import load_dotenv
-load_dotenv(dotenv_path=ROOT / "data" / ".env")
+# ── secrets.toml 기반 API 키 로더 ──────────────────────────
+# 우선순위: st.secrets (Streamlit 앱) → secrets.toml 파싱 (일반 실행)
+def _load_secret(key: str, default: str = "") -> str:
+    """secrets.toml에서 키 값을 읽어 반환한다.
+
+    Streamlit 실행 환경에서는 st.secrets를 우선 사용하고,
+    일반 Python 실행 환경에서는 .streamlit/secrets.toml을 직접 파싱한다.
+    """
+    # 1) Streamlit 런타임 컨텍스트에서는 st.secrets 우선
+    try:
+        import streamlit as st
+        return st.secrets.get(key, default)
+    except Exception:
+        pass
+
+    # 2) secrets.toml 직접 파싱 (tomllib Python 3.11+, 하위 호환 tomli)
+    secrets_path = PROJECT_ROOT / ".streamlit" / "secrets.toml"
+    if secrets_path.exists():
+        try:
+            try:
+                import tomllib
+            except ImportError:
+                import tomli as tomllib  # type: ignore
+            with open(secrets_path, "rb") as f:
+                data = tomllib.load(f)
+            return data.get(key, default)
+        except Exception:
+            pass
+
+    # 3) 환경 변수 폴백
+    return os.environ.get(key, default)
+
 
 OLLAMA_BASE_URL        = os.getenv("OLLAMA_BASE_URL",        "http://localhost:11434")
 OLLAMA_MODEL_PRIMARY   = os.getenv("OLLAMA_MODEL_PRIMARY",   "qwen2.5:3b")
 OLLAMA_MODEL_VERIFIER  = os.getenv("OLLAMA_MODEL_VERIFIER",  "phi3:mini")
-GEMINI_API_KEY         = os.getenv("GEMINI_API_KEY",         "")
-OPENAI_API_KEY         = os.getenv("OPENAI_API_KEY",         "")
+GEMINI_API_KEY         = _load_secret("GEMINI_API_KEY")
+OPENAI_API_KEY         = _load_secret("OPENAI_API_KEY")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

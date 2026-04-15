@@ -5,8 +5,7 @@ emotion_analyzer.py
 발화 단위 감정 분류 모듈.
 
 분류 방식:
-  1. Rule-Based: 키워드 매칭 + 감정 패턴 기반 빠른 분류
-  2. LLM-Based : 구조화 프롬프트를 활용한 정밀 분류 (Chain-of-Thought)
+  LLM-Based : 구조화 프롬프트를 활용한 정밀 분류 (Chain-of-Thought)
 
 입력:  발화 텍스트 (str) 또는 대화 전체 (list[str])
 출력:  구조화된 감정 분석 결과 (dict / list[dict])
@@ -57,47 +56,7 @@ GROUP_STRATEGY = {
 }
 
 # ──────────────────────────────────────────────
-# 2. 감정별 키워드 사전 (Rule-Based)
-# ──────────────────────────────────────────────
-
-EMOTION_KEYWORDS: dict[str, list[str]] = {
-    "분노": [
-        "화나", "화났", "짜증", "열받", "빡치", "빡쳐", "미치겠",
-        "환장", "꺼져", "닥쳐", "진짜", "어떻게", "왜이래", "왜그래",
-        "말라니깐", "말랬지", "하지마", "그만해", "됐거든", "짜증나",
-        "구박", "속상", "못참", "화를", "버릇이", "뻔뻔",
-    ],
-    "슬픔": [
-        "서운", "섭섭", "슬퍼", "슬프", "울고", "울었", "눈물",
-        "미안", "외로", "혼자", "그리워", "그립", "아프", "힘들",
-        "답답", "우울", "속상", "걱정", "안쓰럽", "불쌍",
-        "후회", "잘못했", "죄송", "괴로",
-    ],
-    "행복": [
-        "좋아", "좋겠", "행복", "기뻐", "기쁘", "신나", "웃기",
-        "재밌", "재미있", "고마워", "고맙", "감사", "사랑",
-        "최고", "짱", "대박", "축하", "멋지", "예쁘",
-        "다행", "즐거", "설레", "반가",
-    ],
-    "놀람": [
-        "헐", "세상에", "진짜?", "정말?", "말도안돼", "어머",
-        "깜짝", "놀랐", "놀라", "대박", "미쳤", "설마",
-        "에이", "아니", "뭐라고", "거짓말", "놀래",
-    ],
-    "혐오": [
-        "역겹", "징그럽", "지겹", "지긋지긋", "재수없", "싸가지",
-        "한심", "찌질", "못났", "쓸모없", "경멸", "꼴",
-        "더럽", "치사", "비열", "꼴불견", "못생",
-    ],
-    "공포": [
-        "무서", "두려", "겁나", "불안", "걱정", "무섭",
-        "불길", "위험", "떨려", "놀랐", "공포", "겁",
-        "조심", "위협", "피해",
-    ],
-}
-
-# ──────────────────────────────────────────────
-# 3. 결과 데이터 클래스
+# 2. 결과 데이터 클래스
 # ──────────────────────────────────────────────
 
 @dataclass
@@ -109,8 +68,8 @@ class EmotionResult:
     primary_en: str  # 감정 라벨 (영문)
     group: str  # 상위 그룹 (negative / neutral / positive)
     confidence: float  # 신뢰도 (0.0 ~ 1.0)
-    method: str  # 분류 방식 ("rule_based" | "llm")
-    reasoning: str = ""  # 분류 근거 (LLM 사용 시)
+    method: str  # 분류 방식 ("llm")
+    reasoning: str = ""  # 분류 근거
     strategy: str = ""  # 대응 전략
 
     @property
@@ -144,7 +103,7 @@ class DialogueEmotionResult:
     dominant_group: str = ""
     negative_ratio: float = 0.0
     emotion_volatility: float = 0.0
-    method: str = "rule_based"
+    method: str = "llm"
 
     @property
     def negative_ratio_percent(self) -> int:
@@ -178,156 +137,10 @@ class DialogueEmotionResult:
 
 
 # ──────────────────────────────────────────────
-# 4. Rule-Based 감정 분류기
+# 3. LLM 기반 감정 분류기
 # ──────────────────────────────────────────────
 
-class RuleBasedEmotionClassifier:
-    """
-    키워드 매칭 기반 감정 분류기.
-
-    동작 원리:
-      1. 입력 발화에서 각 감정별 키워드 매칭 횟수를 계산
-      2. 가장 많이 매칭된 감정을 1차 후보로 선정
-      3. 매칭이 없으면 '중립'으로 분류
-      4. 신뢰도는 (최다 매칭 수) / (전체 매칭 수) 로 산출
-    """
-
-    def __init__(self) -> None:
-        self.keywords = EMOTION_KEYWORDS
-        # 키워드를 정규식 패턴으로 사전 컴파일
-        self._patterns: dict[str, list[re.Pattern]] = {}
-        for emotion, kw_list in self.keywords.items():
-            self._patterns[emotion] = [
-                re.compile(re.escape(kw)) for kw in kw_list
-            ]
-
-    def classify(self, utterance: str) -> EmotionResult:
-        """
-        단일 발화 감정 분류.
-
-        Parameters
-        ----------
-        utterance : str
-            분류 대상 발화 텍스트.
-
-        Returns
-        -------
-        EmotionResult
-            구조화된 감정 분석 결과.
-        """
-        text = utterance.strip()
-        if not text:
-            return self._make_result(text, "중립", 0.5, "빈 발화 -> 중립 처리")
-
-        # 각 감정별 키워드 매칭 횟수 계산
-        scores: dict[str, int] = {}
-        for emotion, patterns in self._patterns.items():
-            count = sum(1 for p in patterns if p.search(text))
-            if count > 0:
-                scores[emotion] = count
-
-        if not scores:
-            return self._make_result(text, "중립", 0.5, "키워드 매칭 없음 -> 중립 처리")
-
-        # 최다 매칭 감정 선정
-        total = sum(scores.values())
-        best_emotion = max(scores, key=scores.get)  # type: ignore[arg-type]
-        best_count = scores[best_emotion]
-        confidence = round(best_count / total, 2) if total > 0 else 0.5
-
-        # 신뢰도 하한 보정: 단일 매칭은 최소 0.4
-        confidence = max(confidence, 0.4)
-
-        reasoning = (
-            f"키워드 매칭 결과 - "
-            + ", ".join(f"{e}: {c}회" for e, c in sorted(scores.items(), key=lambda x: -x[1]))
-            + f" -> '{best_emotion}' 선정 (신뢰도 {confidence})"
-        )
-
-        return self._make_result(text, best_emotion, confidence, reasoning)
-
-    def classify_dialogue(
-        self,
-        utterances: list[str],
-        dialogue_id: str | None = None,
-    ) -> DialogueEmotionResult:
-        """
-        대화(발화 리스트) 전체 감정 분석.
-
-        Parameters
-        ----------
-        utterances : list[str]
-            발화 텍스트 리스트.
-        dialogue_id : str | None
-            대화 식별자 (선택).
-
-        Returns
-        -------
-        DialogueEmotionResult
-            대화 전체 감정 분석 결과.
-        """
-        results = [self.classify(u) for u in utterances]
-        emotion_seq = [r.primary for r in results]
-        groups = [r.group for r in results]
-
-        # 지배적 감정: 중립 제외 최빈 감정 (전부 중립이면 중립)
-        non_neutral = [e for e in emotion_seq if e != "중립"]
-        if non_neutral:
-            from collections import Counter
-            dominant = Counter(non_neutral).most_common(1)[0][0]
-        else:
-            dominant = "중립"
-
-        # 부정 감정 비율
-        neg_count = sum(1 for g in groups if g == "negative")
-        neg_ratio = round(neg_count / len(groups), 4) if groups else 0.0
-
-        # 감정 변동성: 감정 전환 횟수 / (전체 - 1)
-        if len(emotion_seq) > 1:
-            transitions = sum(
-                1 for i in range(1, len(emotion_seq))
-                if emotion_seq[i] != emotion_seq[i - 1]
-            )
-            volatility = round(transitions / (len(emotion_seq) - 1), 4)
-        else:
-            volatility = 0.0
-
-        return DialogueEmotionResult(
-            dialogue_id=dialogue_id,
-            utterance_results=results,
-            emotion_sequence=emotion_seq,
-            dominant_emotion=dominant,
-            dominant_group=EMOTION_GROUP.get(dominant, "neutral"),
-            negative_ratio=neg_ratio,
-            emotion_volatility=volatility,
-            method="rule_based",
-        )
-
-    @staticmethod
-    def _make_result(
-        utterance: str,
-        emotion: str,
-        confidence: float,
-        reasoning: str,
-    ) -> EmotionResult:
-        """EmotionResult 생성 헬퍼."""
-        return EmotionResult(
-            utterance=utterance,
-            primary=emotion,
-            primary_en=EMOTION_LABEL_EN.get(emotion, "unknown"),
-            group=EMOTION_GROUP.get(emotion, "neutral"),
-            confidence=confidence,
-            method="rule_based",
-            reasoning=reasoning,
-            strategy=GROUP_STRATEGY.get(EMOTION_GROUP.get(emotion, "neutral"), ""),
-        )
-
-
-# ──────────────────────────────────────────────
-# 5. LLM 기반 감정 분류기
-# ──────────────────────────────────────────────
-
-class LLMEmotionClassifier:
+class EmotionClassifier:
     """
     LLM 프롬프트 기반 감정 분류기.
 
@@ -335,12 +148,11 @@ class LLMEmotionClassifier:
       - Chain-of-Thought 추론 방식으로 분류 근거를 단계별 도출
       - JSON 구조화 출력을 강제하여 파싱 안정성 확보
       - 신뢰도(confidence) 자체 평가 포함
-      - 실제 LLM API 호출은 외부에서 주입 (call_llm 함수)
+      - 실제 LLM API 호출은 외부에서 주입 (llm_caller 함수)
 
     사용 방식:
-      1. get_prompt() → 프롬프트 문자열 생성
-      2. 외부에서 LLM API 호출
-      3. parse_response() → 응답 파싱 → EmotionResult 반환
+      1. classify(utterance, llm_caller) → EmotionResult 반환
+      2. classify_dialogue(utterances, llm_caller) → DialogueEmotionResult 반환
     """
 
     # 단일 발화 분류 프롬프트
@@ -442,6 +254,53 @@ class LLMEmotionClassifier:
             f"[발화 {i}] {u}" for i, u in enumerate(utterances)
         )
         return self.DIALOGUE_PROMPT.format(dialogue=dialogue_text)
+
+    def classify(self, utterance: str, llm_caller) -> EmotionResult:
+        """
+        단일 발화 감정 분류 (LLM 기반).
+
+        Parameters
+        ----------
+        utterance : str
+            분류 대상 발화 텍스트.
+        llm_caller : callable
+            LLM 호출 함수. 입력: prompt(str) → 출력: response(str)
+
+        Returns
+        -------
+        EmotionResult
+            구조화된 감정 분석 결과.
+        """
+        prompt = self.get_single_prompt(utterance)
+        response = llm_caller(prompt)
+        return self.parse_single_response(utterance, response)
+
+    def classify_dialogue(
+        self,
+        utterances: list[str],
+        llm_caller,
+        dialogue_id: str | None = None,
+    ) -> DialogueEmotionResult:
+        """
+        대화(발화 리스트) 전체 감정 분석 (LLM 기반).
+
+        Parameters
+        ----------
+        utterances : list[str]
+            발화 텍스트 리스트.
+        llm_caller : callable
+            LLM 호출 함수.
+        dialogue_id : str | None
+            대화 식별자 (선택).
+
+        Returns
+        -------
+        DialogueEmotionResult
+            대화 전체 감정 분석 결과.
+        """
+        prompt = self.get_dialogue_prompt(utterances)
+        response = llm_caller(prompt)
+        return self.parse_dialogue_response(utterances, response, dialogue_id)
 
     def parse_single_response(
         self, utterance: str, llm_output: str
@@ -582,25 +441,22 @@ class LLMEmotionClassifier:
 
 
 # ──────────────────────────────────────────────
-# 6. 통합 분석 함수
+# 4. 통합 분석 함수
 # ──────────────────────────────────────────────
 
 def analyze_emotion(
     utterance: str,
-    method: str = "rule_based",
     llm_caller=None,
 ) -> EmotionResult:
     """
-    단일 발화 감정 분석 통합 함수.
+    단일 발화 감정 분석 함수 (LLM 기반).
 
     Parameters
     ----------
     utterance : str
         분석 대상 발화 텍스트.
-    method : str
-        분류 방식. "rule_based" 또는 "llm".
-    llm_caller : callable | None
-        LLM 호출 함수. method="llm" 시 필수.
+    llm_caller : callable
+        LLM 호출 함수. 필수.
         입력: prompt(str) → 출력: response(str)
 
     Returns
@@ -608,30 +464,20 @@ def analyze_emotion(
     EmotionResult
         구조화된 감정 분석 결과.
     """
-    if method == "rule_based":
-        classifier = RuleBasedEmotionClassifier()
-        return classifier.classify(utterance)
+    if llm_caller is None:
+        raise ValueError("llm_caller 함수를 제공해야 합니다.")
 
-    elif method == "llm":
-        if llm_caller is None:
-            raise ValueError("LLM 방식 사용 시 llm_caller 함수를 제공해야 합니다.")
-        llm_clf = LLMEmotionClassifier()
-        prompt = llm_clf.get_single_prompt(utterance)
-        response = llm_caller(prompt)
-        return llm_clf.parse_single_response(utterance, response)
-
-    else:
-        raise ValueError(f"지원하지 않는 분류 방식: {method}. 'rule_based' 또는 'llm'을 사용하세요.")
+    classifier = EmotionClassifier()
+    return classifier.classify(utterance, llm_caller)
 
 
 def analyze_dialogue_emotion(
     utterances: list[str],
     dialogue_id: str | None = None,
-    method: str = "rule_based",
     llm_caller=None,
 ) -> DialogueEmotionResult:
     """
-    대화 전체 감정 분석 통합 함수.
+    대화 전체 감정 분석 함수 (LLM 기반).
 
     Parameters
     ----------
@@ -639,110 +485,95 @@ def analyze_dialogue_emotion(
         발화 텍스트 리스트.
     dialogue_id : str | None
         대화 식별자.
-    method : str
-        분류 방식. "rule_based" 또는 "llm".
-    llm_caller : callable | None
-        LLM 호출 함수. method="llm" 시 필수.
+    llm_caller : callable
+        LLM 호출 함수. 필수.
 
     Returns
     -------
     DialogueEmotionResult
         대화 전체 감정 분석 결과.
     """
-    if method == "rule_based":
-        classifier = RuleBasedEmotionClassifier()
-        return classifier.classify_dialogue(utterances, dialogue_id)
-
-    elif method == "llm":
-        if llm_caller is None:
-            raise ValueError("LLM 방식 사용 시 llm_caller 함수를 제공해야 합니다.")
-        llm_clf = LLMEmotionClassifier()
-        prompt = llm_clf.get_dialogue_prompt(utterances)
-        response = llm_caller(prompt)
-        return llm_clf.parse_dialogue_response(utterances, response, dialogue_id)
-
-    else:
-        raise ValueError(f"지원하지 않는 분류 방식: {method}")
-
-
-# ──────────────────────────────────────────────
-# 7. 교차 검증 유틸리티
-# ──────────────────────────────────────────────
-
-def cross_validate(
-    utterance: str,
-    llm_caller=None,
-) -> dict:
-    """
-    Rule-Based와 LLM 결과를 교차 검증한다.
-
-    Parameters
-    ----------
-    utterance : str
-        분석 대상 발화 텍스트.
-    llm_caller : callable
-        LLM 호출 함수.
-
-    Returns
-    -------
-    dict
-        교차 검증 결과.
-        - rule_based: Rule-Based 결과
-        - llm: LLM 결과
-        - match: 두 결과 일치 여부
-        - final: 최종 채택 결과
-        - conflict_note: 불일치 시 설명
-    """
-    rule_result = analyze_emotion(utterance, method="rule_based")
-
     if llm_caller is None:
-        return {
-                "rule_based": rule_result.to_dict(),
-            "llm": None,
-            "match": None,
-            "final": rule_result.to_dict(),
-            "conflict_note": "LLM 미사용 - Rule-Based 결과 단독 채택",
-        }
+        raise ValueError("llm_caller 함수를 제공해야 합니다.")
 
-    llm_result = analyze_emotion(utterance, method="llm", llm_caller=llm_caller)
-    is_match = rule_result.primary == llm_result.primary
-
-    # 최종 채택 로직: LLM 신뢰도가 0.6 이상이면 LLM 우선, 아니면 Rule-Based
-    if is_match:
-        final = llm_result
-        note = "Rule-Based와 LLM 결과 일치 -> LLM 결과 채택"
-    elif llm_result.confidence >= 0.6:
-        final = llm_result
-        note = (
-            f"불일치 발생 (Rule: {rule_result.primary}, LLM: {llm_result.primary}). "
-            f"LLM 신뢰도({llm_result.confidence}) >= 0.6 -> LLM 결과 채택"
-        )
-    else:
-        final = rule_result
-        note = (
-            f"불일치 발생 (Rule: {rule_result.primary}, LLM: {llm_result.primary}). "
-            f"LLM 신뢰도({llm_result.confidence}) < 0.6 -> Rule-Based 결과 채택"
-        )
-
-    return {
-        "rule_based": rule_result.to_dict(),
-        "llm": llm_result.to_dict(),
-        "match": is_match,
-        "final": final.to_dict(),
-        "conflict_note": note,
-    }
+    classifier = EmotionClassifier()
+    return classifier.classify_dialogue(utterances, llm_caller, dialogue_id)
 
 
 # ──────────────────────────────────────────────
-# 8. CLI 테스트
+# 5. CLI 테스트
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
     sys.stdout.reconfigure(encoding='utf-8')
 
+    # ── Mock LLM Caller (테스트용) ──
+    # 실제 LLM 없이 테스트하기 위한 더미 응답 생성기
+    def mock_llm_caller(prompt: str) -> str:
+        """테스트용 Mock LLM 응답 생성."""
+        # 발화 텍스트에서 간단히 감정 추정 (테스트 목적)
+        if "화나" in prompt or "짜증" in prompt or "미치겠" in prompt or "피지 말라" in prompt:
+            return json.dumps({
+                "primary": "분노", "primary_en": "anger", "group": "negative",
+                "confidence": 0.85, "reasoning": "공격적 어투와 명령형 표현에서 분노 감정이 드러남"
+            }, ensure_ascii=False)
+        elif "걱정" in prompt or "불안" in prompt or "무서" in prompt:
+            return json.dumps({
+                "primary": "공포", "primary_en": "fear", "group": "negative",
+                "confidence": 0.7, "reasoning": "걱정과 불안 표현에서 공포/염려 감정 확인"
+            }, ensure_ascii=False)
+        elif "좋아" in prompt or "대박" in prompt or "기뻐" in prompt:
+            return json.dumps({
+                "primary": "행복", "primary_en": "happiness", "group": "positive",
+                "confidence": 0.9, "reasoning": "긍정적 감탄과 기쁨 표현"
+            }, ensure_ascii=False)
+        elif "지긋지긋" in prompt or "재수없" in prompt:
+            return json.dumps({
+                "primary": "혐오", "primary_en": "disgust", "group": "negative",
+                "confidence": 0.8, "reasoning": "경멸과 거부 표현에서 혐오 감정 확인"
+            }, ensure_ascii=False)
+        elif "미안" in prompt or "잘못" in prompt or "서운" in prompt:
+            return json.dumps({
+                "primary": "슬픔", "primary_en": "sadness", "group": "negative",
+                "confidence": 0.75, "reasoning": "미안함과 자기 비난에서 슬픔 감정 확인"
+            }, ensure_ascii=False)
+        elif "손님" in prompt:
+            return json.dumps({
+                "primary": "중립", "primary_en": "neutral", "group": "neutral",
+                "confidence": 0.9, "reasoning": "사실 전달의 일상 대화"
+            }, ensure_ascii=False)
+        else:
+            return json.dumps({
+                "primary": "중립", "primary_en": "neutral", "group": "neutral",
+                "confidence": 0.6, "reasoning": "특별한 감정 표현 없음"
+            }, ensure_ascii=False)
+
+    def mock_dialogue_llm_caller(prompt: str) -> str:
+        """테스트용 Mock 대화 분석 LLM 응답 생성."""
+        return json.dumps({
+            "utterances": [
+                {"index": 0, "text": "", "primary": "분노", "primary_en": "anger",
+                 "group": "negative", "confidence": 0.9, "reasoning": "강한 불만 표출"},
+                {"index": 1, "text": "", "primary": "중립", "primary_en": "neutral",
+                 "group": "neutral", "confidence": 0.7, "reasoning": "무덤덤한 제안"},
+                {"index": 2, "text": "", "primary": "분노", "primary_en": "anger",
+                 "group": "negative", "confidence": 0.85, "reasoning": "금전 불만"},
+                {"index": 3, "text": "", "primary": "슬픔", "primary_en": "sadness",
+                 "group": "negative", "confidence": 0.6, "reasoning": "체념 표현"},
+                {"index": 4, "text": "", "primary": "슬픔", "primary_en": "sadness",
+                 "group": "negative", "confidence": 0.8, "reasoning": "속상함 토로"},
+            ],
+            "dialogue_summary": {
+                "dominant_emotion": "분노",
+                "dominant_group": "negative",
+                "emotion_flow": "분노 → 중립 → 분노 → 슬픔 → 슬픔으로 감정이 악화됨",
+                "conflict_level": "high"
+            }
+        }, ensure_ascii=False)
+
     print("=" * 60)
-    print("감정 분석기 테스트 (Rule-Based)")
+    print("감정 분석기 테스트 (LLM-Based)")
     print("=" * 60)
 
     test_utterances = [
@@ -751,18 +582,18 @@ if __name__ == "__main__":
         "난 그냥... 걱정 돼서...",
         "대박! 진짜? 나 너무 좋아!",
         "지긋지긋해. 재수없어.",
-        "뭔가 말리는 기분이야. 불길해.",
+        "뭔가 말리는 기분이야. 불안해.",
         "알았어. 내가 잘못했어. 미안해.",
     ]
 
-    clf = RuleBasedEmotionClassifier()
+    clf = EmotionClassifier()
 
     for utt in test_utterances:
-        result = clf.classify(utt)
+        result = clf.classify(utt, mock_llm_caller)
         print(f"\n발화: {utt}")
         print(f"  감정: {result.primary} ({result.primary_en})")
         print(f"  그룹: {result.group}")
-        print(f"  신뢰도: {result.confidence}")
+        print(f"  신뢰도: {result.confidence_str}")
         print(f"  전략: {result.strategy}")
         print(f"  근거: {result.reasoning}")
 
@@ -779,16 +610,15 @@ if __name__ == "__main__":
         "오늘도 2만원 밖에 못 팔고 들어와서 속상해 죽겠는데!",
     ]
 
-    dial_result = clf.classify_dialogue(dialogue, dialogue_id="test_001")
+    dial_result = clf.classify_dialogue(dialogue, mock_dialogue_llm_caller, dialogue_id="test_001")
     print(f"\n감정 시퀀스: {' > '.join(dial_result.emotion_sequence)}")
     print(f"지배적 감정: {dial_result.dominant_emotion} ({dial_result.dominant_group})")
-    print(f"부정 감정 비율: {dial_result.negative_ratio}")
-    print(f"감정 변동성: {dial_result.emotion_volatility}")
+    print(f"부정 감정 비율: {dial_result.negative_ratio_str}")
+    print(f"감정 변동성: {dial_result.emotion_volatility_str}")
 
     # LLM 프롬프트 예시 출력
     print("\n" + "=" * 60)
     print("LLM 프롬프트 예시")
     print("=" * 60)
-    llm_clf = LLMEmotionClassifier()
-    prompt = llm_clf.get_single_prompt("왜 화를 내? 그냥 자주 왔다 갔다 하면 되잖아.")
+    prompt = clf.get_single_prompt("왜 화를 내? 그냥 자주 왔다 갔다 하면 되잖아.")
     print(prompt[:500] + "...")
