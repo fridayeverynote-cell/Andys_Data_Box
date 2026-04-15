@@ -1,0 +1,8 @@
+
+langchain-core
+pandas
+python-dotenv
+langchain-openai
+langchain-community
+matplotlib
+rank-bm25
